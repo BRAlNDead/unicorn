@@ -17,6 +17,8 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.15")
     cmake_policy(SET CMP0092 NEW)
 endif()
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Honor visibility properties for all target types.
 cmake_policy(SET CMP0063 NEW)
 

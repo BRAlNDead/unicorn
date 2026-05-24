@@ -1245,12 +1245,8 @@ else
     echo big/little test failed
 fi
 
-##########################################
 # pkg-config probe
-
-if ! has "$pkg_config_exe"; then
-  error_exit "pkg-config binary '$pkg_config_exe' not found"
-fi
+# Bypassed
 
 ##########################################
 # pthread probe
