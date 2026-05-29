@@ -739,9 +739,9 @@ static void page_lock_pair(struct uc_struct *uc, PageDesc **ret_p1, tb_page_addr
     }
 }
 
-/* Minimum size of the code gen buffer.  For Inline VM use cases (short
-   code fragments with frequent boundary exits), 64KB is sufficient.  */
-#define MIN_CODE_GEN_BUFFER_SIZE     (64 * KiB)
+/* Minimum size of the code gen buffer.  This number is randomly chosen,
+   but not so small that we can't have a fair number of TB's live.  */
+#define MIN_CODE_GEN_BUFFER_SIZE     (1 * MiB)
 
 /* Maximum size of the code gen buffer we'd like to use.  Unless otherwise
    indicated, this is constrained by the range of direct branches on the
