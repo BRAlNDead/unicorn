@@ -88,7 +88,7 @@ static void tlb_window_reset(CPUTLBDesc *desc, int64_t ns,
 }
 
 /**
- * tlb_mmu_resize_locked() - perform TLB resize bookkeeping; resize if necessary
+ * tlb_mmu_resize_locked() - perform TLB resize bookkeeping
  * @desc: The CPUTLBDesc portion of the TLB
  * @fast: The CPUTLBDescFast portion of the same TLB
  *
@@ -101,107 +101,30 @@ static void tlb_window_reset(CPUTLBDesc *desc, int64_t ns,
  * future scheduling decisions, and therefore have to decide the magnitude of
  * the resize based on past observations.
  *
- * In general, a memory-hungry process can benefit greatly from an appropriately
- * sized TLB, since a guest TLB miss is very expensive. This doesn't mean that
- * we just have to make the TLB as large as possible; while an oversized TLB
- * results in minimal TLB miss rates, it also takes longer to be flushed
- * (flushes can be _very_ frequent), and the reduced locality can also hurt
- * performance.
- *
- * To achieve near-optimal performance for all kinds of workloads, we:
- *
- * 1. Aggressively increase the size of the TLB when the use rate of the
- * TLB being flushed is high, since it is likely that in the near future this
- * memory-hungry process will execute again, and its memory hungriness will
- * probably be similar.
- *
- * 2. Slowly reduce the size of the TLB as the use rate declines over a
- * reasonably large time window. The rationale is that if in such a time window
- * we have not observed a high TLB use rate, it is likely that we won't observe
- * it in the near future. In that case, once a time window expires we downsize
- * the TLB to match the maximum use rate observed in the window.
- *
- * 3. Try to keep the maximum use rate in a time window in the 30-70% range,
- * since in that range performance is likely near-optimal. Recall that the TLB
- * is direct mapped, so we want the use rate to be low (or at least not too
- * high), since otherwise we are likely to have a significant amount of
- * conflict misses.
+ * Loki embeds Unicorn for long inline-VM sessions. TCG helpers and translated
+ * code can carry CPUTLBEntry pointers across refill/flush paths, so replacing
+ * the backing arrays while a VM session is active can turn a helper argument
+ * into a stale host pointer. Keep the arrays stable after tlb_mmu_init(); this
+ * function only maintains the observation window used by the existing flush
+ * bookkeeping.
  */
 static void tlb_mmu_resize_locked(struct uc_struct *uc, CPUTLBDesc *desc, CPUTLBDescFast *fast,
                                   int64_t now)
 {
-    size_t old_size = tlb_n_entries(fast);
-    size_t rate;
-    size_t new_size = old_size;
-    int64_t window_len_ms = 100;
-    int64_t window_len_ns = window_len_ms * 1000 * 1000;
-    bool window_expired = now > desc->window_begin_ns + window_len_ns;
+    const int64_t window_len_ms = 100;
+    const int64_t window_len_ns = window_len_ms * 1000 * 1000;
+    const bool window_expired = now > desc->window_begin_ns + window_len_ns;
+
+    (void)uc;
+    (void)fast;
 
     if (desc->n_used_entries > desc->window_max_entries) {
         desc->window_max_entries = desc->n_used_entries;
     }
-    rate = desc->window_max_entries * 100 / old_size;
 
-    if (rate > 70) {
-        new_size = MIN(old_size << 1, 1ULL << CPU_TLB_DYN_MAX_BITS);
-    } else if (rate < 30 && window_expired) {
-        size_t ceil = pow2ceil(desc->window_max_entries);
-        size_t expected_rate = desc->window_max_entries * 100 / ceil;
-
-        /*
-         * Avoid undersizing when the max number of entries seen is just below
-         * a pow2. For instance, if max_entries == 1025, the expected use rate
-         * would be 1025/2048==50%. However, if max_entries == 1023, we'd get
-         * 1023/1024==99.9% use rate, so we'd likely end up doubling the size
-         * later. Thus, make sure that the expected use rate remains below 70%.
-         * (and since we double the size, that means the lowest rate we'd
-         * expect to get is 35%, which is still in the 30-70% range where
-         * we consider that the size is appropriate.)
-         */
-        if (expected_rate > 70) {
-            ceil *= 2;
-        }
-        new_size = MAX(ceil, 1 << CPU_TLB_DYN_MIN_BITS);
-    }
-
-    if (new_size == old_size) {
-        if (window_expired) {
-            tlb_window_reset(desc, now, desc->n_used_entries);
-        }
-        return;
-    }
-
-    g_free(fast->table);
-    g_free(desc->iotlb);
-
-    tlb_window_reset(desc, now, 0);
-    /* desc->n_used_entries is cleared by the caller */
-    fast->mask = (new_size - 1) << CPU_TLB_ENTRY_BITS;
-    fast->table = g_try_new(CPUTLBEntry, new_size);
-    desc->iotlb = g_try_new(CPUIOTLBEntry, new_size);
-    if (desc->iotlb) {
-        memset(desc->iotlb, 0, sizeof(CPUIOTLBEntry) * new_size);
-    }
-
-    /*
-     * If the allocations fail, try smaller sizes. We just freed some
-     * memory, so going back to half of new_size has a good chance of working.
-     * Increased memory pressure elsewhere in the system might cause the
-     * allocations to fail though, so we progressively reduce the allocation
-     * size, aborting if we cannot even allocate the smallest TLB we support.
-     */
-    while (fast->table == NULL || desc->iotlb == NULL) {
-        if (new_size == (1 << CPU_TLB_DYN_MIN_BITS)) {
-            fprintf(stderr, "%s: %s.\n", __func__, strerror(errno));
-            abort();    // FIXME: do not abort
-        }
-        new_size = MAX(new_size >> 1, 1 << CPU_TLB_DYN_MIN_BITS);
-        fast->mask = (new_size - 1) << CPU_TLB_ENTRY_BITS;
-
-        g_free(fast->table);
-        g_free(desc->iotlb);
-        fast->table = g_try_new(CPUTLBEntry, new_size);
-        desc->iotlb = g_try_new(CPUIOTLBEntry, new_size);
+    /* Keep the arrays stable after tlb_mmu_init(); do not free/reallocate. */
+    if (window_expired) {
+        tlb_window_reset(desc, now, desc->n_used_entries);
     }
 }
 
