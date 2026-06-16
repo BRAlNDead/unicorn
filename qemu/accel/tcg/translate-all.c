@@ -36,6 +36,33 @@
 #include "sysemu/tcg.h"
 #include "uc_priv.h"
 
+#if defined(__ANDROID__)
+extern int loki_client_hide_addr(int pid, int uid, unsigned long addr)
+    __attribute__((weak));
+extern void loki_mark_mapping_nofork(void *base, size_t size,
+                                     const char *label)
+    __attribute__((weak));
+
+static void loki_unicorn_hide_code_gen_buffer(void *buf, size_t size)
+{
+    if (!buf || buf == MAP_FAILED || size == 0) {
+        return;
+    }
+    if (loki_client_hide_addr) {
+        loki_client_hide_addr(getpid(), getuid(), (unsigned long)buf);
+    }
+    if (loki_mark_mapping_nofork) {
+        loki_mark_mapping_nofork(buf, size, "loki-unicorn-tcg-code");
+    }
+}
+#else
+static void loki_unicorn_hide_code_gen_buffer(void *buf, size_t size)
+{
+    (void)buf;
+    (void)size;
+}
+#endif
+
 static bool tb_exec_is_locked(struct uc_struct*);
 static void tb_exec_change(struct uc_struct*, bool locked);
 
@@ -1030,6 +1057,7 @@ static inline void *alloc_code_gen_buffer(struct uc_struct *uc)
     if (buf == MAP_FAILED) {
         return NULL;
     }
+    loki_unicorn_hide_code_gen_buffer(buf, size);
 
 #ifdef __mips__
     if (cross_256mb(buf, size)) {
