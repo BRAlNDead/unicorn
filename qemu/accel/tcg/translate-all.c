@@ -39,6 +39,8 @@
 #if defined(__ANDROID__)
 extern int loki_client_hide_addr(int pid, int uid, unsigned long addr)
     __attribute__((weak));
+extern int loki_client_hide_range(int pid, int uid, unsigned long start,
+                                  unsigned long end) __attribute__((weak));
 extern void loki_mark_mapping_nofork(void *base, size_t size,
                                      const char *label)
     __attribute__((weak));
@@ -48,7 +50,10 @@ static void loki_unicorn_hide_code_gen_buffer(void *buf, size_t size)
     if (!buf || buf == MAP_FAILED || size == 0) {
         return;
     }
-    if (loki_client_hide_addr) {
+    if (loki_client_hide_range) {
+        loki_client_hide_range(getpid(), getuid(), (unsigned long)buf,
+                               (unsigned long)((uintptr_t)buf + size));
+    } else if (loki_client_hide_addr) {
         loki_client_hide_addr(getpid(), getuid(), (unsigned long)buf);
     }
     if (loki_mark_mapping_nofork) {
